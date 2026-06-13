@@ -1,0 +1,26 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id           String   @id @default(cuid())
+  name         String
+  handle       String   @unique
+  proxyIp      String   @default("")
+  region       String   @default("")
+  status       String   @default("Offline") // Active, Suspended, Offline
+  followers    Int      @default(0)
+  following    Int      @default(0)
+  avatarUrl    String?
+  email        String?
+  password     String?
+  cookies      String?  // JSON array of Playwright cookie objects
+  localStorage String?  // JSON object of x.com localStorage
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
