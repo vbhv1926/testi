@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 import { chromium } from 'playwright';
+import { startLocalProxyTunnel } from '@/lib/proxy-tunnel';
 
 const prisma = new PrismaClient();
 
@@ -27,16 +28,28 @@ export async function POST(
   }
 
   let browser;
+  let tunnel: any = null;
   try {
     browser = await chromium.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
 
+    let proxyConfig = undefined;
+    if (account.proxyIp && account.proxyIp.trim()) {
+      try {
+        tunnel = await startLocalProxyTunnel(account.proxyIp);
+        proxyConfig = { server: tunnel.server };
+      } catch (err: any) {
+        console.error('Failed to start proxy tunnel:', err.message);
+        proxyConfig = { server: account.proxyIp };
+      }
+    }
+
     const context = await browser.newContext({
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      proxy: account.proxyIp ? { server: `http://${account.proxyIp}` } : undefined,
+      proxy: proxyConfig,
     });
 
     const page = await context.newPage();
@@ -123,5 +136,9 @@ export async function POST(
     }
 
     return NextResponse.json({ error: error.message }, { status: 500 });
+  } finally {
+    if (tunnel) {
+      tunnel.close();
+    }
   }
 }

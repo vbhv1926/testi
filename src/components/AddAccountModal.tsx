@@ -54,6 +54,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       stopPolling();
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setStep("form");
       setErrorMsg("");
       setStatusMessage("");
@@ -139,8 +140,8 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
         onAccountAdded();
         onClose();
       }, 2000);
-    } catch (err: any) {
-      setErrorMsg(err.message);
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep("error");
     }
   };
@@ -237,8 +238,8 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
         onAccountAdded();
         onClose();
       }, 2000);
-    } catch (err: any) {
-      setErrorMsg(err.message);
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep("error");
     }
   };
@@ -445,11 +446,11 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
                         </div>
                         <div className="flex items-start gap-2">
                           <span className="w-5 h-5 rounded-full bg-[#00629d] text-white text-[9px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">2</span>
-                          <span>Log in to X normally (password, 2FA, anything — it's a real browser)</span>
+                          <span>Log in to X normally (password, 2FA, anything — it&apos;s a real browser)</span>
                         </div>
                         <div className="flex items-start gap-2">
                           <span className="w-5 h-5 rounded-full bg-[#00629d] text-white text-[9px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">3</span>
-                          <span>XRaid detects you're logged in, captures the session, and closes the window</span>
+                          <span>XRaid detects you&apos;re logged in, captures the session, and closes the window</span>
                         </div>
                         <div className="flex items-start gap-2">
                           <span className="w-5 h-5 rounded-full bg-[#10B981] text-white text-[9px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">✓</span>
@@ -599,7 +600,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({
                   </p>
                   <p>• Enter your username, password, and 2FA if asked</p>
                   <p>• Complete any verification X requires</p>
-                  <p>• Once you see your home feed, we'll take it from there</p>
+                  <p>• Once you see your home feed, we&apos;ll take it from there</p>
                 </div>
               )}
             </div>

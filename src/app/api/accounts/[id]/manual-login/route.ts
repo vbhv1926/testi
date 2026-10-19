@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { chromium, BrowserContext } from 'playwright';
 import { PrismaClient } from '@prisma/client';
+import { startLocalProxyTunnel } from '@/lib/proxy-tunnel';
 
 const prisma = new PrismaClient();
 
@@ -10,6 +11,7 @@ export const manualLoginSessions: Record<string, {
   status: 'waiting' | 'capturing' | 'success' | 'error';
   message: string;
   browser?: BrowserContext;
+  tunnel?: any;
 }> = {};
 
 /**
@@ -33,6 +35,7 @@ export async function POST(
   // If a session is already running for this account, abort it first
   if (manualLoginSessions[id]) {
     try { await manualLoginSessions[id].browser?.browser()?.close(); } catch {}
+    try { manualLoginSessions[id].tunnel?.close(); } catch {}
     delete manualLoginSessions[id];
   }
 
@@ -41,19 +44,24 @@ export async function POST(
   // Launch browser and watch in background — do NOT await this
   (async () => {
     let browser: any;
+    let tunnel: any = null;
     try {
-      const proxyConfig =
-        account.proxyIp && account.proxyIp.trim()
-          ? {
-              server: account.proxyIp.includes('://')
-                ? account.proxyIp
-                : `http://${account.proxyIp}`,
-            }
-          : undefined;
+      let proxyConfig = undefined;
+      if (account.proxyIp && account.proxyIp.trim()) {
+        try {
+          tunnel = await startLocalProxyTunnel(account.proxyIp);
+          proxyConfig = { server: tunnel.server };
+        } catch (err: any) {
+          console.error('Failed to start proxy tunnel:', err.message);
+          proxyConfig = { server: account.proxyIp };
+        }
+      }
 
       browser = await chromium.launch({
         headless: false,
-        executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        executablePath: process.platform === 'win32'
+          ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+          : '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         args: [
           '--no-sandbox',
           '--start-maximized',
@@ -78,6 +86,7 @@ export async function POST(
         status: 'waiting',
         message: 'Log in to X in the Chrome window that just opened.',
         browser: context,
+        tunnel,
       };
 
       const page = await context.newPage();
@@ -101,6 +110,7 @@ export async function POST(
             message: 'Browser window was closed before login completed.',
           };
           await browser.close().catch(() => {});
+          if (tunnel) tunnel.close();
           return;
         }
 
@@ -117,6 +127,7 @@ export async function POST(
           message: 'Timed out waiting for login. Please try again.',
         };
         await browser.close().catch(() => {});
+        if (tunnel) tunnel.close();
         return;
       }
 
@@ -169,6 +180,7 @@ export async function POST(
       // Close the login browser after a short pause so user sees success
       await new Promise(r => setTimeout(r, 2000));
       await browser.close().catch(() => {});
+      if (tunnel) tunnel.close();
 
     } catch (err: any) {
       manualLoginSessions[id] = {
@@ -176,6 +188,7 @@ export async function POST(
         message: err.message || 'Unknown error during login capture.',
       };
       if (browser) await browser.close().catch(() => {});
+      if (tunnel) tunnel.close();
     }
   })();
 

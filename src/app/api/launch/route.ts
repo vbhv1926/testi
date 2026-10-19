@@ -21,19 +21,23 @@ function sanitizeCookies(raw: any[]) {
   return raw
     .filter(c => c.name && c.value !== undefined)
     .map(c => {
+      let domain = String(c.domain || '.x.com');
+      if (domain !== 'x.com' && !domain.startsWith('.')) {
+        domain = '.' + domain;
+      }
       return {
         name: String(c.name),
         value: String(c.value ?? ''),
-        domain: '.x.com',
+        domain: domain,
         path: String(c.path || '/'),
         expires: typeof c.expirationDate === 'number'
           ? (c.expirationDate > 20000000000 ? Math.floor(c.expirationDate / 1000) : c.expirationDate)
           : typeof c.expires === 'number'
             ? (c.expires > 20000000000 ? Math.floor(c.expires / 1000) : c.expires)
             : -1,
-        httpOnly: Boolean(c.httpOnly),
-        secure: Boolean(c.secure),
-        sameSite: 'Lax' as const,
+        httpOnly: String(c.name) === 'auth_token' ? true : Boolean(c.httpOnly),
+        secure: String(c.name) === 'auth_token' ? true : Boolean(c.secure),
+        sameSite: String(c.name) === 'auth_token' ? 'None' as const : toPlaywrightSameSite(c.sameSite),
       };
     });
 }
@@ -107,31 +111,54 @@ export async function POST(request: Request) {
     })();
 
     // Build proxy config — only if proxyIp is a non-empty string
-    let proxyConfig = undefined;
+    let proxyConfig: any = undefined;
     if (account.proxyIp && account.proxyIp.trim()) {
-      const pUrl = account.proxyIp.includes('://') ? account.proxyIp : `http://${account.proxyIp}`;
+      const rawUrl = account.proxyIp.includes('://') ? account.proxyIp : `http://${account.proxyIp}`;
       try {
-        const u = new URL(pUrl);
-        proxyConfig = { server: `${u.protocol}//${u.host}` };
-        if (u.username) proxyConfig.username = decodeURIComponent(u.username);
-        if (u.password) proxyConfig.password = decodeURIComponent(u.password);
-      } catch {
-        proxyConfig = { server: pUrl };
+        const u = new URL(rawUrl);
+        proxyConfig = {
+          server: `${u.protocol}//${u.hostname}:${u.port}`,
+          username: u.username ? decodeURIComponent(u.username) : undefined,
+          password: u.password ? decodeURIComponent(u.password) : undefined
+        };
+      } catch (e) {
+        proxyConfig = { server: rawUrl };
       }
     }
 
-    // Launch a visible (headed) browser
-    const browser = await chromium.launch({
-      headless: false,
-      executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--start-maximized',
-        // Disable automation flags that X detects
-        '--disable-blink-features=AutomationControlled',
-      ],
-    });
+    const launchBrowser = async () => {
+      const isWin = process.platform === 'win32';
+      const isMac = process.platform === 'darwin';
+      const macChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+      const winChrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+
+      try {
+        const executablePath = isWin ? winChrome : (isMac ? macChrome : undefined);
+        return await chromium.launch({
+          headless: false,
+          executablePath,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--start-maximized',
+            '--disable-blink-features=AutomationControlled',
+          ],
+        });
+      } catch (err: any) {
+        console.warn('Custom Chrome path launch failed, falling back to Playwright chromium:', err.message);
+        return await chromium.launch({
+          headless: false,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--start-maximized',
+            '--disable-blink-features=AutomationControlled',
+          ],
+        });
+      }
+    };
+
+    const browser = await launchBrowser();
 
     const context = await browser.newContext({
       userAgent:
@@ -147,13 +174,24 @@ export async function POST(request: Request) {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
 
-    // Inject cookies — add them all at once with .x.com domain
+    // Inject cookies — duplicate for x.com and twitter.com to handle redirections
+    const extendedCookies: any[] = [];
+    for (const c of cookies) {
+      extendedCookies.push({ ...c, domain: c.domain.startsWith('.') ? c.domain : '.' + c.domain });
+      extendedCookies.push({ ...c, domain: c.domain.startsWith('.') ? c.domain.substring(1) : c.domain });
+      if (c.domain.includes('x.com')) {
+        const twDomain = c.domain.replace('x.com', 'twitter.com');
+        extendedCookies.push({ ...c, domain: twDomain });
+        extendedCookies.push({ ...c, domain: twDomain.startsWith('.') ? twDomain.substring(1) : twDomain });
+      }
+    }
+
     try {
-      await context.addCookies(cookies);
-      console.log(`Injected ${cookies.length} cookies for ${account.handle}`);
+      await context.addCookies(extendedCookies);
+      console.log(`Injected ${extendedCookies.length} extended cookies for ${account.handle}`);
     } catch (e: any) {
       console.error('Failed to add cookies batch, trying one by one:', e.message);
-      for (const cookie of cookies) {
+      for (const cookie of extendedCookies) {
         try {
           await context.addCookies([cookie]);
         } catch (e2: any) {

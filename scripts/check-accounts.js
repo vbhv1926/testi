@@ -53,9 +53,20 @@ async function checkAccounts() {
       continue;
     }
 
-    const proxyConfig = account.proxyIp && account.proxyIp.trim()
-      ? { server: account.proxyIp.includes('://') ? account.proxyIp : `http://${account.proxyIp}` }
-      : undefined;
+    let proxyConfig = undefined;
+    if (account.proxyIp && account.proxyIp.trim()) {
+      const rawUrl = account.proxyIp.includes('://') ? account.proxyIp : `http://${account.proxyIp}`;
+      try {
+        const u = new URL(rawUrl);
+        proxyConfig = {
+          server: `${u.protocol}//${u.hostname}:${u.port}`,
+          username: u.username ? decodeURIComponent(u.username) : undefined,
+          password: u.password ? decodeURIComponent(u.password) : undefined
+        };
+      } catch (e) {
+        proxyConfig = { server: rawUrl };
+      }
+    }
 
     let browser;
     try {
@@ -64,7 +75,7 @@ async function checkAccounts() {
         args: ['--no-sandbox', '--disable-setuid-sandbox']
       });
 
-      const context = await browser.newContext(); // removed proxy config so it actually tests cookies without timing out
+      const context = await browser.newContext(proxyConfig ? { proxy: proxyConfig } : {});
       
       const extendedCookies = [];
       for (const c of cookies) {
@@ -90,8 +101,8 @@ async function checkAccounts() {
         await prisma.account.delete({ where: { id: account.id } });
       } else {
         // Might be logged in. Let's see if there's a suspend notice
-        const text = await page.content();
-        if (text.includes('suspended') || text.includes('Account suspended')) {
+        const visibleText = await page.locator('body').innerText().catch(() => '');
+        if (visibleText.includes('suspended') || visibleText.includes('Account suspended')) {
           console.log(`❌ SUSPENDED. REMOVING ACCOUNT.`);
           await prisma.account.delete({ where: { id: account.id } });
         } else {

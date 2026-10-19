@@ -24,64 +24,30 @@ export default function Dashboard() {
   const [tweetText, setTweetText] = useState("");
   const [massReplies, setMassReplies] = useState("");
   const [targetCount, setTargetCount] = useState("");
+  const [concurrency, setConcurrency] = useState("1");
   const [massActionLoading, setMassActionLoading] = useState<string | null>(null);
   const [massActionProgress, setMassActionProgress] = useState<{current: number, total: number, activeId: string | null} | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const logEndRef = useRef<HTMLDivElement | null>(null);
+
+  const addLog = useCallback((msg: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setLogs(prev => [...prev, `[${timestamp}] ${msg}`]);
+  }, []);
+
+  useEffect(() => {
+    if (logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logs]);
   
   const [scanStatusMap, setScanStatusMap] = useState<Record<string, Record<string, {liked: boolean, retweeted: boolean, bookmarked: boolean}>>>({});
   const [scanningAccountId, setScanningAccountId] = useState<string | null>(null);
   const scanStatusRef = useRef(scanStatusMap);
   
   useEffect(() => { scanStatusRef.current = scanStatusMap; }, [scanStatusMap]);
+  // Automatic tweet engagement verification has been disabled as requested to prevent opening all browsers unnecessarily.
 
-  useEffect(() => {
-    const url = tweetText.trim();
-    const isUrl = /^(https?:\/\/)?(www\.)?(x|twitter)\.com\/\w+\/status\/\d+/i.test(url);
-    if (!isUrl) return;
-
-    let isCancelled = false;
-    const runScan = async () => {
-      await new Promise(r => setTimeout(r, 1000));
-      if (isCancelled) return;
-
-      const targetAccounts = accounts.filter(a => a.status === "Active" && a.cookies);
-      
-      const concurrency = 5;
-      for (let i = 0; i < targetAccounts.length; i += concurrency) {
-        if (isCancelled) break;
-        const chunk = targetAccounts.slice(i, i + concurrency);
-        
-        await Promise.all(chunk.map(async (acc) => {
-          if (scanStatusRef.current[url]?.[acc.id]) return;
-          
-          setScanningAccountId(acc.id);
-          try {
-            const res = await fetch("/api/action", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ accountId: acc.id, tweetUrl: url, action: 'status' }),
-            });
-            if (res.ok && !isCancelled) {
-              const data = await res.json();
-              setScanStatusMap(prev => ({
-                ...prev,
-                [url]: {
-                  ...(prev[url] || {}),
-                  [acc.id]: data
-                }
-              }));
-            }
-          } catch (e) { }
-        }));
-      }
-      if (!isCancelled) setScanningAccountId(null);
-    };
-
-    runScan();
-    return () => {
-      isCancelled = true;
-      setScanningAccountId(null);
-    };
-  }, [tweetText, accounts]);
 
   const fetchAccounts = useCallback(async () => {
     try {
@@ -115,53 +81,87 @@ export default function Dashboard() {
     }
     
     let repliesList: string[] = [];
-    if (actionType === 'reply') {
+    const replyAssignment = new Map<string, string>();
+
+    if (actionType === 'reply' || actionType === 'raid') {
       repliesList = massReplies.split('\n').map(s => s.trim()).filter(Boolean);
-      if (repliesList.length === 0) {
+      
+      if (actionType === 'reply' && repliesList.length === 0) {
         alert("Please enter at least one reply in the Mass Replies box.");
         return;
       }
+      
+      if (repliesList.length > 0) {
+        if (actionType === 'raid') {
+          const shuffledAccounts = [...targetAccounts].sort(() => 0.5 - Math.random());
+          const numToReply = Math.min(repliesList.length, targetAccounts.length);
+          for (let i = 0; i < numToReply; i++) {
+            replyAssignment.set(shuffledAccounts[i].id, repliesList[i]);
+          }
+        } else if (actionType === 'reply') {
+          targetAccounts.forEach((acc, i) => {
+            replyAssignment.set(acc.id, repliesList[i % repliesList.length]);
+          });
+        }
+      }
     }
     
-    if (!confirm(`Are you sure you want to mass ${actionType} using ${targetAccounts.length} accounts? This will process 5 at a time.`)) return;
+    let concurrencyVal = parseInt(concurrency);
+    if (isNaN(concurrencyVal) || concurrencyVal <= 0) {
+      concurrencyVal = 1;
+    }
+
+    if (!confirm(`Are you sure you want to mass ${actionType} using ${targetAccounts.length} accounts? This will process ${concurrencyVal} at a time.`)) return;
     
     setMassActionLoading(actionType);
     setMassActionProgress({ current: 0, total: targetAccounts.length, activeId: null });
+    addLog(`🚀 Starting mass ${actionType.toUpperCase()} raid using ${targetAccounts.length} accounts...`);
     
     let completed = 0;
-    const concurrency = 5;
     
-    for (let i = 0; i < targetAccounts.length; i += concurrency) {
-      const chunk = targetAccounts.slice(i, i + concurrency);
+    for (let i = 0; i < targetAccounts.length; i += concurrencyVal) {
+      const chunk = targetAccounts.slice(i, i + concurrencyVal);
       
       await Promise.all(chunk.map(async (acc, indexInChunk) => {
         const globalIndex = i + indexInChunk;
         let replyText = "";
-        if (actionType === 'reply') {
-          replyText = repliesList[globalIndex % repliesList.length];
+        if (actionType === 'reply' || actionType === 'raid') {
+          replyText = replyAssignment.get(acc.id) || "";
         }
         
+        addLog(`[${acc.handle}] Launching browser context via proxy...`);
         try {
           const res = await fetch("/api/action", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ accountId: acc.id, tweetUrl: tweetText.trim(), action: actionType, replyText }),
           });
+          
+          const data = await res.json().catch(() => null);
           if (!res.ok) {
-            const errData = await res.json().catch(() => null);
-            console.error(`Failed ${actionType} for ${acc.handle}:`, errData);
+            console.error(`Failed ${actionType} for ${acc.handle}:`, data);
+            addLog(`[${acc.handle}] ❌ FAILED: ${data?.error || data?.details || "Unknown proxy or loading timeout. Keeping browser open."}`);
+          } else {
+            addLog(`[${acc.handle}] ✅ SUCCESS: ${data?.message || "Action completed!"}`);
           }
-        } catch (e) {
+        } catch (e: unknown) {
           console.error(`Network error for ${acc.handle}:`, e);
+          const errorMsg = e instanceof Error ? e.message : String(e);
+          addLog(`[${acc.handle}] ❌ NETWORK ERROR: ${errorMsg || "Connection timeout. Keeping browser open."}`);
         } finally {
           completed++;
           setMassActionProgress(prev => prev ? { ...prev, current: completed, activeId: acc.id } : null);
         }
       }));
+      if (i + concurrencyVal < targetAccounts.length) {
+        addLog(`Staggering next chunk. Waiting 2 seconds...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
     
     setMassActionProgress(null);
     setMassActionLoading(null);
+    addLog(`🎉 Mass ${actionType.toUpperCase()} complete for all accounts!`);
     alert(`Mass ${actionType} completed for ${completed} accounts!`);
   };
 
@@ -314,6 +314,18 @@ export default function Dashboard() {
                         className="w-20 bg-white border border-[#bfc7d3]/50 rounded-lg px-2 py-1.5 text-[12px] text-[#0b1c30] placeholder:text-[#6f7883] focus:outline-none focus:ring-1 focus:ring-[#00629d]"
                         value={targetCount}
                         onChange={e => setTargetCount(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 mr-4">
+                      <label className="text-[12px] font-semibold text-[#3f4851]">Open at Once (Concurrency):</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="15"
+                        placeholder="1"
+                        className="w-20 bg-white border border-[#bfc7d3]/50 rounded-lg px-2 py-1.5 text-[12px] text-[#0b1c30] placeholder:text-[#6f7883] focus:outline-none focus:ring-1 focus:ring-[#00629d]"
+                        value={concurrency}
+                        onChange={e => setConcurrency(e.target.value)}
                       />
                     </div>
                   </div>
@@ -494,6 +506,45 @@ export default function Dashboard() {
             ))}
           </section>
         )}
+
+        {/* Logs Panel Section */}
+        <section className="mt-xl bg-slate-900 border border-slate-800 rounded-2xl p-lg shadow-lg">
+          <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2 text-slate-200">
+              <span className="material-symbols-outlined text-[#00629d] text-[20px] font-bold">terminal</span>
+              <h3 className="font-bold text-[15px] tracking-tight">System & Proxy Status Logs</h3>
+            </div>
+            <button
+              onClick={() => setLogs([])}
+              className="px-3 py-1 text-[11px] font-semibold text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 transition-colors rounded-lg flex items-center gap-1 active:scale-95 cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-[14px]">delete_sweep</span>
+              Clear Logs
+            </button>
+          </div>
+          <div className="bg-slate-950 font-mono text-[12px] text-slate-300 p-lg rounded-xl h-64 overflow-y-auto space-y-1.5 shadow-inner border border-slate-900">
+            {logs.length === 0 ? (
+              <div className="text-slate-600 italic flex items-center justify-center h-full">
+                No active session logs. Trigger a mass action to see proxy status and action results.
+              </div>
+            ) : (
+              logs.map((log, index) => {
+                let colorClass = "text-slate-300";
+                if (log.includes("✅")) colorClass = "text-emerald-400";
+                else if (log.includes("❌")) colorClass = "text-rose-400 font-semibold";
+                else if (log.includes("⚠️")) colorClass = "text-amber-400";
+                else if (log.includes("Starting") || log.includes("Launching")) colorClass = "text-sky-400";
+                
+                return (
+                  <div key={index} className={`whitespace-pre-wrap leading-relaxed ${colorClass}`}>
+                    {log}
+                  </div>
+                );
+              })
+            )}
+            <div ref={logEndRef} />
+          </div>
+        </section>
       </main>
     </>
   );

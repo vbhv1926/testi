@@ -6,11 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "bot": "tsx scripts/telegram-bot.ts"
   },
   "dependencies": {
     "@prisma/client": "6.4.1",
+    "@types/node-telegram-bot-api": "^0.64.15",
+    "grammy": "^1.44.0",
     "next": "16.2.7",
+    "node-telegram-bot-api": "^1.1.1",
     "playwright": "^1.60.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
